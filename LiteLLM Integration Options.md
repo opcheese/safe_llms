@@ -87,15 +87,17 @@ class SafetyMonitor(CustomLogger):
 ```
 
 **Pros**:
-| Advantage | Description |
-|-----------|-------------|
-| Non-blocking | Async callbacks run in background, no latency impact |
-| Full access | Access to request, response, timing, user metadata |
-| Easy setup | Just register class, no config changes needed |
-| Per-request option | Can pass callbacks dynamically per request |
-| Persistence-friendly | Can connect to any database for session tracking |
+
+| Advantage            | Description                                          |
+| -------------------- | ---------------------------------------------------- |
+| Non-blocking         | Async callbacks run in background, no latency impact |
+| Full access          | Access to request, response, timing, user metadata   |
+| Easy setup           | Just register class, no config changes needed        |
+| Per-request option   | Can pass callbacks dynamically per request           |
+| Persistence-friendly | Can connect to any database for session tracking     |
 
 **Cons**:
+
 | Disadvantage | Description |
 |--------------|-------------|
 | Post-hoc only | Cannot block/reject requests (only log after) |
@@ -150,14 +152,16 @@ class SafetyInterceptor(CustomLogger):
 ```
 
 **Pros**:
-| Advantage | Description |
-|-----------|-------------|
-| Request blocking | Can reject dangerous requests before LLM call |
+
+| Advantage             | Description                                            |
+| --------------------- | ------------------------------------------------------ |
+| Request blocking      | Can reject dangerous requests before LLM call          |
 | Response modification | Can add disclaimers, crisis resources, break reminders |
-| User context | Access to user ID, team, API key metadata |
-| Cost savings | Blocking before call saves API costs |
+| User context          | Access to user ID, team, API key metadata              |
+| Cost savings          | Blocking before call saves API costs                   |
 
 **Cons**:
+
 | Disadvantage | Description |
 |--------------|-------------|
 | Latency impact | Pre-call hooks add latency (keep fast) |
@@ -226,6 +230,7 @@ guardrails:
 ```
 
 **Pros**:
+
 | Advantage | Description |
 |-----------|-------------|
 | Purpose-built | Designed specifically for safety checks |
@@ -235,6 +240,7 @@ guardrails:
 | Standard interface | Easy to swap with other guardrail providers |
 
 **Cons**:
+
 | Disadvantage | Description |
 |--------------|-------------|
 | Content-focused | Better suited for message analysis than behavioral tracking |
@@ -291,6 +297,7 @@ app.add_middleware(SafetyMiddleware, session_store=redis_session_store)
 ```
 
 **Pros**:
+
 | Advantage | Description |
 |-----------|-------------|
 | Full control | Complete request/response access |
@@ -299,6 +306,7 @@ app.add_middleware(SafetyMiddleware, session_store=redis_session_store)
 | Early rejection | Can reject before any LiteLLM processing |
 
 **Cons**:
+
 | Disadvantage | Description |
 |--------------|-------------|
 | Tightly coupled | Tied to LiteLLM's FastAPI implementation |
@@ -373,6 +381,7 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 ```
 
 **Pros**:
+
 | Advantage | Description |
 |-----------|-------------|
 | Separation of concerns | Safety logic completely independent |
@@ -383,6 +392,7 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 | Multi-proxy | Single safety service for multiple LiteLLM instances |
 
 **Cons**:
+
 | Disadvantage | Description |
 |--------------|-------------|
 | Latency | Network hop to external service |
@@ -557,7 +567,420 @@ async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
 
 ---
 
-## 7. References
+## 7. Crisis Escalation System (Topic 3)
+
+This section details how to implement the crisis detection and professional referral system within LiteLLM.
+
+### 7.1 Severity Levels
+
+| Level | Zone | Description | Response |
+|-------|------|-------------|----------|
+| **Level 1** | GREEN | General distress | Normal AI support |
+| **Level 2** | YELLOW | Moderate concern | Suggest professional guidance |
+| **Level 3** | ORANGE | Crisis situation | Provide crisis resources, modify AI behavior |
+| **Level 4** | RED | Emergency | Immediate professional referral, limit AI interaction |
+
+### 7.2 Escalation Flow in LiteLLM
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    CrisisGuardrail (during_call)                 │
+│                                                                  │
+│  User Message → [Regex Detection] → [Severity Classification]   │
+│                                              │                   │
+│                     ┌────────────────────────┼────────────────┐  │
+│                     ▼                        ▼                ▼  │
+│              Level 1-2                   Level 3           Level 4│
+│              (GREEN/YELLOW)              (ORANGE)          (RED) │
+│                     │                        │                │  │
+│                     ▼                        ▼                ▼  │
+│              Pass through            Inject resources    Block + │
+│              + Log event             + Modify system     Redirect│
+│                                      prompt                      │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    InterventionHooks (post_call)                 │
+│                                                                  │
+│  [Append Crisis Resources] → [Log Escalation] → [Alert System]  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    External Systems                              │
+│  [Resource DB] [Notification Service] [Follow-up Scheduler]     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 7.3 Implementation
+
+```python
+from litellm.integrations.custom_guardrail import CustomGuardrail
+from typing import Optional
+import re
+
+class CrisisEscalationSystem(CustomGuardrail):
+    def __init__(self):
+        # Crisis patterns from Оценка риска
+        self.patterns = {
+            'SELF_HARM': {
+                'HIGH': [r'(?i)(хочу\s+(умереть|покончить|убить себя))',
+                         r'(?i)(want\s+to\s+(die|kill\s+myself))'],
+                'MEDIUM': [r'(?i)(не\s+хочу\s+жить)',
+                           r"(?i)(don't\s+want\s+to\s+live)"],
+                'LOW': [r'(?i)(депрессия|нет\s+сил)',
+                        r'(?i)(depressed|no\s+energy)'],
+            },
+            'PSYCHOSIS': {
+                'HIGH': [r'(?i)(слышу\s+голоса)', r'(?i)(voices\s+telling)'],
+                'MEDIUM': [r'(?i)(кажется\s+нереально)', r'(?i)(feels\s+unreal)'],
+            }
+        }
+
+        # Professional resources database
+        self.resources = {
+            'RU': {
+                'crisis_hotline': '8-800-2000-122 (бесплатно, круглосуточно)',
+                'mental_health': 'Телефон доверия: 8-495-988-44-34',
+                'emergency': '112',
+            },
+            'US': {
+                'crisis_hotline': '988 Suicide & Crisis Lifeline',
+                'mental_health': 'SAMHSA: 1-800-662-4357',
+                'emergency': '911',
+            }
+        }
+
+    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+        """Detect crisis and escalate appropriately"""
+        messages = data.get("messages", [])
+        user_content = self._extract_user_content(messages)
+
+        # Detect crisis level
+        crisis = self._detect_crisis(user_content)
+        user_id = user_api_key_dict.user_id
+        locale = user_api_key_dict.metadata.get("locale", "US")
+
+        if crisis["level"] == "RED":
+            # Level 4: Emergency - provide resources and limit interaction
+            await self._log_crisis_event(user_id, crisis, "EMERGENCY")
+            await self._send_alert(user_id, crisis)
+
+            return self._generate_crisis_response(crisis, locale)
+
+        elif crisis["level"] == "ORANGE":
+            # Level 3: Crisis - inject resources into conversation
+            await self._log_crisis_event(user_id, crisis, "CRISIS")
+
+            data["messages"] = self._inject_crisis_context(
+                messages, crisis, locale
+            )
+            return data
+
+        elif crisis["level"] == "YELLOW":
+            # Level 2: Concern - log and suggest resources in response
+            await self._log_crisis_event(user_id, crisis, "CONCERN")
+
+            # Store flag for post-call resource injection
+            data["metadata"] = data.get("metadata", {})
+            data["metadata"]["_crisis_level"] = "YELLOW"
+            data["metadata"]["_crisis_class"] = crisis["class"]
+            return data
+
+        # Level 1: Normal - pass through
+        return data
+
+    async def async_post_call_success_hook(self, kwargs, response, start_time, end_time):
+        """Append resources for Level 2 (YELLOW) cases"""
+        metadata = kwargs.get("metadata", {})
+
+        if metadata.get("_crisis_level") == "YELLOW":
+            locale = kwargs.get("user_api_key_dict", {}).get("metadata", {}).get("locale", "US")
+
+            # Append gentle resource suggestion
+            suffix = self._get_gentle_resource_suffix(locale)
+
+            if hasattr(response, "choices") and response.choices:
+                response.choices[0].message.content += suffix
+
+        return response
+
+    def _detect_crisis(self, text: str) -> dict:
+        """Classify crisis level based on patterns"""
+        for class_name, levels in self.patterns.items():
+            if any(re.search(p, text) for p in levels.get('HIGH', [])):
+                return {"level": "RED", "class": class_name}
+            if any(re.search(p, text) for p in levels.get('MEDIUM', [])):
+                return {"level": "ORANGE", "class": class_name}
+            if any(re.search(p, text) for p in levels.get('LOW', [])):
+                return {"level": "YELLOW", "class": class_name}
+        return {"level": "GREEN", "class": None}
+
+    def _inject_crisis_context(self, messages: list, crisis: dict, locale: str) -> list:
+        """Inject crisis-aware system prompt"""
+        resources = self.resources.get(locale, self.resources["US"])
+
+        crisis_system_prompt = {
+            "role": "system",
+            "content": f"""IMPORTANT: The user may be experiencing a {crisis['class']} crisis.
+
+Your response should:
+1. Acknowledge their feelings with empathy
+2. Gently encourage professional support
+3. Provide these resources: {resources['crisis_hotline']}
+4. Avoid giving medical/therapeutic advice
+5. Keep the conversation supportive but redirect to professionals
+
+Do NOT:
+- Dismiss their feelings
+- Provide specific coping strategies (leave to professionals)
+- Continue normal conversation without addressing the concern"""
+        }
+
+        # Insert at beginning of messages
+        return [crisis_system_prompt] + messages
+
+    def _generate_crisis_response(self, crisis: dict, locale: str) -> str:
+        """Generate immediate crisis response for Level 4 (RED)"""
+        resources = self.resources.get(locale, self.resources["US"])
+
+        if locale == "RU":
+            return f"""Я очень беспокоюсь о том, чем вы делитесь. То, что вы чувствуете, серьезно, и вы заслуживаете профессиональной поддержки.
+
+Пожалуйста, свяжитесь с кризисной службой прямо сейчас:
+📞 {resources['crisis_hotline']}
+
+Если вы в непосредственной опасности, позвоните: {resources['emergency']}
+
+Вы не одиноки, и помощь доступна 24/7."""
+
+        return f"""I'm very concerned about what you're sharing. What you're feeling is serious, and you deserve professional support.
+
+Please reach out to a crisis service right now:
+📞 {resources['crisis_hotline']}
+
+If you're in immediate danger, call: {resources['emergency']}
+
+You're not alone, and help is available 24/7."""
+
+    def _get_gentle_resource_suffix(self, locale: str) -> str:
+        """Gentle resource suggestion for Level 2 (YELLOW)"""
+        resources = self.resources.get(locale, self.resources["US"])
+
+        if locale == "RU":
+            return f"""
+
+---
+💙 Если вам нужна поддержка, вы всегда можете обратиться на линию помощи: {resources['crisis_hotline']}"""
+
+        return f"""
+
+---
+💙 If you ever need support, you can always reach out to: {resources['crisis_hotline']}"""
+
+    async def _log_crisis_event(self, user_id: str, crisis: dict, severity: str):
+        """Log crisis event for analytics and follow-up"""
+        # Implement logging to your analytics system
+        pass
+
+    async def _send_alert(self, user_id: str, crisis: dict):
+        """Send alert for RED level events"""
+        # Implement alerting (email, Slack, PagerDuty, etc.)
+        pass
+
+    def _extract_user_content(self, messages: list) -> str:
+        """Extract user messages for analysis"""
+        return " ".join(
+            m.get("content", "") for m in messages
+            if m.get("role") == "user"
+        )
+```
+
+### 7.4 Configuration
+
+```yaml
+guardrails:
+  - guardrail_name: "crisis-escalation"
+    litellm_params:
+      guardrail: safety_module.CrisisEscalationSystem
+      mode: "during_call"  # Parallel execution for low latency
+
+# Optional: External resource service
+environment_variables:
+  RESOURCE_API_URL: "https://api.crisis-resources.org/v1"
+  ALERT_WEBHOOK_URL: "https://hooks.slack.com/services/xxx"
+```
+
+### 7.5 Professional Resource Database Schema
+
+```python
+from pydantic import BaseModel
+from typing import List, Optional
+
+class CrisisResource(BaseModel):
+    id: str
+    name: str
+    type: str  # "hotline", "therapist", "emergency", "online", "support_group"
+    phone: Optional[str]
+    url: Optional[str]
+    hours: str  # "24/7", "9am-5pm", etc.
+    languages: List[str]
+    specializations: List[str]  # "suicide", "anxiety", "substance", etc.
+    location: Optional[str]  # Country/region code
+
+class ResourceDatabase:
+    async def get_resources(
+        self,
+        crisis_type: str,
+        locale: str,
+        limit: int = 3
+    ) -> List[CrisisResource]:
+        """Get relevant resources based on crisis type and location"""
+        pass
+
+    async def get_emergency_resource(self, locale: str) -> CrisisResource:
+        """Get emergency services for location"""
+        pass
+```
+
+### 7.6 Follow-up System
+
+```python
+from datetime import datetime, timedelta
+
+class FollowUpScheduler:
+    def __init__(self, session_store, notification_service):
+        self.session_store = session_store
+        self.notification_service = notification_service
+
+    async def schedule_follow_up(
+        self,
+        user_id: str,
+        crisis_level: str,
+        delay_hours: int = 24
+    ):
+        """Schedule a follow-up check after crisis detection"""
+        follow_up_time = datetime.utcnow() + timedelta(hours=delay_hours)
+
+        await self.session_store.set(
+            f"followup:{user_id}",
+            {
+                "scheduled_at": datetime.utcnow().isoformat(),
+                "follow_up_at": follow_up_time.isoformat(),
+                "crisis_level": crisis_level,
+                "status": "pending"
+            }
+        )
+
+    async def check_pending_followups(self):
+        """Background task to process follow-ups"""
+        # Run periodically to check on users after crisis events
+        pass
+```
+
+### 7.7 Escalation Decision Matrix
+
+| Crisis Class | Level 2 (YELLOW) | Level 3 (ORANGE) | Level 4 (RED) |
+|--------------|------------------|------------------|---------------|
+| **SELF_HARM** | Append hotline | Inject crisis prompt | Block + immediate resources |
+| **PSYCHOSIS** | Suggest evaluation | Inject grounding prompt | Block + emergency referral |
+| **DELUSION** | Log only | Gentle reality check | Depends on danger level |
+| **OBSESSION** | Session limit warning | Enforce break | N/A |
+| **ANTHROPO** | Log only | Boundary reminder | N/A |
+
+### 7.8 Privacy & Ethical Considerations
+
+```python
+class CrisisPrivacyPolicy:
+    """
+    Crisis data handling policies
+    """
+
+    # What to log
+    LOG_ALLOWED = [
+        "crisis_level",      # GREEN/YELLOW/ORANGE/RED
+        "crisis_class",      # SELF_HARM, PSYCHOSIS, etc.
+        "timestamp",         # When detected
+        "action_taken",      # What intervention was applied
+        "resources_shown",   # Which resources were provided
+    ]
+
+    # What NOT to log
+    LOG_PROHIBITED = [
+        "message_content",   # Actual user messages (privacy)
+        "personal_details",  # Names, locations, etc.
+        "conversation_history",  # Full conversation
+    ]
+
+    # Data retention
+    RETENTION_DAYS = {
+        "GREEN": 7,          # Delete after 1 week
+        "YELLOW": 30,        # Delete after 1 month
+        "ORANGE": 90,        # Delete after 3 months
+        "RED": 180,          # Delete after 6 months (for follow-up)
+    }
+
+    # User rights
+    USER_RIGHTS = [
+        "right_to_know",     # User can request what was logged
+        "right_to_delete",   # User can request deletion
+        "right_to_optout",   # User can opt out of crisis detection
+    ]
+```
+
+### 7.9 Testing Crisis Escalation
+
+```python
+import pytest
+
+class TestCrisisEscalation:
+    @pytest.fixture
+    def escalation_system(self):
+        return CrisisEscalationSystem()
+
+    def test_level_4_detection(self, escalation_system):
+        """RED level should trigger immediate response"""
+        text = "I want to kill myself"
+        crisis = escalation_system._detect_crisis(text)
+        assert crisis["level"] == "RED"
+        assert crisis["class"] == "SELF_HARM"
+
+    def test_level_3_detection(self, escalation_system):
+        """ORANGE level should inject crisis context"""
+        text = "I don't want to live anymore"
+        crisis = escalation_system._detect_crisis(text)
+        assert crisis["level"] == "ORANGE"
+
+    def test_level_2_detection(self, escalation_system):
+        """YELLOW level should append resources"""
+        text = "I've been feeling really depressed"
+        crisis = escalation_system._detect_crisis(text)
+        assert crisis["level"] == "YELLOW"
+
+    def test_normal_message(self, escalation_system):
+        """Normal messages should pass through"""
+        text = "Help me write a Python function"
+        crisis = escalation_system._detect_crisis(text)
+        assert crisis["level"] == "GREEN"
+
+    def test_russian_detection(self, escalation_system):
+        """Should detect Russian crisis language"""
+        text = "Хочу умереть"
+        crisis = escalation_system._detect_crisis(text)
+        assert crisis["level"] == "RED"
+
+    def test_resource_injection(self, escalation_system):
+        """Crisis context should include resources"""
+        messages = [{"role": "user", "content": "test"}]
+        crisis = {"class": "SELF_HARM"}
+        result = escalation_system._inject_crisis_context(messages, crisis, "US")
+        assert "988" in result[0]["content"]  # US crisis hotline
+```
+
+---
+
+## 8. References
 
 - [LiteLLM Documentation](https://docs.litellm.ai/)
 - [Custom Callbacks](https://docs.litellm.ai/docs/observability/custom_callback)
